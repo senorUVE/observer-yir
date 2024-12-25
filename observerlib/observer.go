@@ -89,3 +89,13 @@ func (o *Observer) ObserverMiddleware() func(ctx context.Context, req interface{
 		return resp, err
 	}
 }
+
+func (o *Observer) PingMongo() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := o.client.Ping(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to ping MongoDB: %w", err)
+	}
+	return nil
+}
