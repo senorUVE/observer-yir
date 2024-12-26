@@ -6,9 +6,11 @@ import (
 	"os"
 	"time"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/exp/slog"
+	"google.golang.org/grpc"
 )
 
 type Observer struct {
@@ -42,6 +44,50 @@ func NewObserver(mongoURI, dbName, collectionName string) (*Observer, error) {
 		collection: collection,
 		logging:    logging,
 	}, nil
+}
+
+func (o *Observer) LogError(ctx context.Context, requestID, errorMsg, details string) error {
+	logEntry := ErrorLog{
+		RequestID: requestID,
+		ErrorMsg:  errorMsg,
+		Timestamp: time.Now(),
+		Details:   details,
+	}
+
+	_, err := o.collection.InsertOne(ctx, logEntry)
+	if err != nil {
+		o.logging.Error("Error logging to MongoDB", "error", err)
+		return err
+	}
+	return nil
+}
+
+func (o *Observer) LogMetrics(ctx context.Context, requestID string, service string, duration time.Duration, statusCode int) {
+	metrics := bson.M{
+		"request_id":  requestID,
+		"service":     service,
+		"duration":    duration.Seconds(),
+		"status_code": statusCode,
+		"timestamp":   time.Now(),
+	}
+
+	_, err := o.collection.InsertOne(ctx, metrics)
+	if err != nil {
+		o.logging.Error("Error logging metrics to MongoDB", "error", err)
+	}
+}
+
+func (o *Observer) ObserverMiddleware() func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		start := time.Now()
+		requestID := fmt.Sprintf("%d", start.UnixNano())
+		resp, err := handler(ctx, req)
+		if err != nil {
+			o.LogError(ctx, requestID, err.Error(), fmt.Sprintf("Request failed: %v", err))
+		}
+		o.LogMetrics(ctx, requestID, info.FullMethod, time.Since(start), 200)
+		return resp, err
+	}
 }
 
 func (o *Observer) PingMongo() error {
